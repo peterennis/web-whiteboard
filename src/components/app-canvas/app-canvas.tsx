@@ -1,5 +1,5 @@
 import { Component, Element, Prop, State, Watch, Method, h } from '@stencil/core';
-import { toastController as toastCtrl, alertController as alertCtrl, modalController } from '@ionic/core';
+import { toastController as toastCtrl, alertController as alertCtrl, modalController, toastController, alertController } from '@ionic/core';
 
 import { debounce } from "typescript-debounce-decorator";
 import { set, get, del } from 'idb-keyval';
@@ -51,6 +51,7 @@ export class AppCanvas {
   timerId: number;
   offscreen = null;
   gridWorker = null;
+  dragToast: HTMLIonToastElement;
 
   componentDidLoad() {
     window.addEventListener('resize', () => {
@@ -140,7 +141,7 @@ export class AppCanvas {
     this.context.lineCap = 'round';
     this.context.lineJoin = 'round';
     this.context.strokeStyle = this.color;
-    this.context.lineWidth = 10;
+    this.context.lineWidth = 4;
 
     this.rect = this.canvasElement.getBoundingClientRect();
 
@@ -168,7 +169,7 @@ export class AppCanvas {
 
     if (clipboardItems) {
 
-      let blobOutput = null;
+      /*let blobOutput = null;
 
       try {
         blobOutput = await clipboardItems[0].getType('image/png');
@@ -186,8 +187,94 @@ export class AppCanvas {
         }
         tempImage.src = imageURL;
 
+      }*/
+
+      try {
+        let blobOutput = null;
+
+        blobOutput = await clipboardItems[0].getType('image/png');
+
+        if (blobOutput) {
+          const imageURL = window.URL.createObjectURL(blobOutput);
+
+          const tempImage = new Image();
+          tempImage.onload = () => {
+            this.context.drawImage(tempImage, ev.clientX, ev.clientY);
+          }
+          tempImage.src = imageURL;
+
+        }
+      }
+      catch (err) {
+        let textOutput = null;
+
+        textOutput = await clipboardItems[0].getType('text/plain');
+        console.log(clipboardItems[0]);
+        console.log(textOutput);
+
+        if (textOutput) {
+          const reader = new FileReader();
+          reader.onload = async () => {
+            await this.addTextToCanvas(ev, reader.result);
+          }
+          reader.readAsText(textOutput);
+        }
       }
     }
+  }
+
+  async insertText(ev) {
+    console.log('insert', ev);
+
+    this.contextAnimation.reverse();
+
+    this.contextAnimation.onfinish = () => {
+      console.log('in here');
+      this.openContextMenu = false;
+    }
+
+    const alert = await alertController.create({
+      header: "Add Text",
+      message: "Enter the text you would like to add to this board",
+      inputs: [
+        {
+          name: 'insertText',
+          type: 'textarea',
+          placeholder: 'Some text to add'
+        },
+      ],
+      buttons: [
+        {
+          text: 'Cancel',
+          role: 'cancel',
+          cssClass: 'secondary',
+          handler: () => {
+            console.log('Confirm Cancel: blah');
+          }
+        }, {
+          text: 'Add',
+          handler: (data) => {
+            console.log('Confirm Okay', data.insertText);
+            this.addTextToCanvas(ev, data.insertText);
+          }
+        }
+      ]
+    });
+    await alert.present();
+  }
+
+  addTextToCanvas(ev, textToInsert) {
+    this.mode = 'something';
+
+    console.log(ev, textToInsert);
+
+    this.context.fillStyle = 'black';
+
+    if (ev) {
+      this.context.fillText(textToInsert, ev.clientX, ev.clientY);
+    }
+
+    this.mode = "pen";
   }
 
   copyImage() {
@@ -261,7 +348,20 @@ export class AppCanvas {
         })
       } else {
         console.log('Your system doesn\'t support sharing files.');
+
+        await (navigator.clipboard as any).write([
+          new ClipboardItem({
+            [blob.type]: blob
+          })
+        ]);
+
+        const toast = await toastController.create({
+          message: "board copied to clipboard",
+          duration: 1800
+        });
+        await toast.present();
       }
+      
     });
   }
 
@@ -717,12 +817,14 @@ export class AppCanvas {
     this.context.fillStyle = 'white';
     this.context.fillRect(0, 0, this.canvasElement.width, this.canvasElement.height);
 
+    this.context.font = "30px Arial";
+
     this.context.lineCap = 'round';
     this.context.lineJoin = 'round';
 
     this.context.strokeStyle = this.color;
 
-    this.context.lineWidth = 10;
+    this.context.lineWidth = 4;
 
     if ("getContextAttributes" in this.context && (this.context as any).getContextAttributes().desynchronized) {
       console.log('Low latency canvas supported. Yay!');
@@ -1032,7 +1134,7 @@ export class AppCanvas {
           this.context.lineWidth = this.mousePos.width - 20;
         }
         else if (this.mousePos.type !== 'touch' && this.mousePos.type !== 'pen') {
-          this.context.lineWidth = 10;
+          this.context.lineWidth = 4;
         }
 
         this.context.stroke();
@@ -1067,6 +1169,7 @@ export class AppCanvas {
 
     return new Promise(() => {
       let base_image = new Image();
+      base_image.crossOrigin = "Anonymous";
 
       base_image.src = imageString;
 
@@ -1176,8 +1279,61 @@ export class AppCanvas {
     console.log(data);
   }
 
+  async handleDragEnter() {
+    this.dragToast = await toastController.create({
+      message: "Drop image to add it to your board..."
+    });
+    await this.dragToast.present();
+  }
+
+  handleDragOver(event: DragEvent) {
+    console.log('dragOver');
+    event.preventDefault();
+  }
+
+  handleDrop(event: DragEvent) {
+    console.log('drop');
+    event.preventDefault();
+
+    this.dragToast.dismiss();
+
+    if (event.dataTransfer.items) {
+      console.log('have items', event.dataTransfer.items.length);
+      // Use DataTransferItemList interface to access the file(s)
+      for (var i = 0; i < event.dataTransfer.items.length; i++) {
+        // If dropped items aren't files, reject them
+        console.log('farther', event.dataTransfer.items[i].kind);
+        if (event.dataTransfer.items[i].kind === 'file') {
+          const file: any = event.dataTransfer.items[i].getAsFile();
+          console.log('... file[' + i + '].name = ' + file.name);
+
+          let fr = new FileReader();
+
+          fr.onload = async () => {
+            console.log(fr.result);
+            console.log(file);
+
+            await this.addImageToCanvas((fr.result as string), 400, 400);
+          }
+          fr.readAsDataURL(file);
+        }
+        else if (event.dataTransfer.items[i].kind === 'string') {
+          console.log(event.dataTransfer.items[i]);
+
+          if (event.dataTransfer.items[i].type === 'text/plain') {
+            event.dataTransfer.items[i].getAsString((data) => {
+              console.log(data);
+
+              this.addTextToCanvas(event, data);
+            });
+          }
+        }
+      }
+    }
+  }
+
   render() {
-    return (
+    return [
       <div>
 
         {
@@ -1200,6 +1356,12 @@ export class AppCanvas {
 
                 <span>Export</span>
               </button>
+
+              <button onClick={(event) => this.insertText(event)}>
+                <ion-icon name="text-outline"></ion-icon>
+
+                Add Text
+              </button>
             </div>
             : null
         }
@@ -1210,8 +1372,8 @@ export class AppCanvas {
 
         <canvas id="gridCanvas" ref={(el) => this.gridCanvas = el as HTMLCanvasElement}></canvas>
 
-        <canvas id="regCanvas" ref={(el) => this.canvasElement = el as HTMLCanvasElement}></canvas>
+        <canvas id="regCanvas" onDragEnter={() => this.handleDragEnter()} onDrop={(event) => this.handleDrop(event)} onDragOver={(event) => this.handleDragOver(event)} ref={(el) => this.canvasElement = el as HTMLCanvasElement}></canvas>
       </div >
-    );
+    ];
   }
 }
