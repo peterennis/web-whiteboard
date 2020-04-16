@@ -4,12 +4,6 @@ import { toastController as toastCtrl, alertController as alertCtrl, modalContro
 import { debounce } from "typescript-debounce-decorator";
 import { set, get, del } from 'idb-keyval';
 
-import { b64toBlob } from '../../helpers/utils';
-import { getNewFileHandle, readFile } from '../../helpers/files-api';
-
-import { exportToOneNote, createActivity } from '../../services/graph';
-import { saveImagesS } from '../../services/api';
-
 import { findLocalImage, doAI, getInkInfo } from '../../canvas.worker';
 
 
@@ -42,8 +36,6 @@ export class AppCanvas {
   dragCanvasElement: HTMLCanvasElement;
   dragContext: CanvasRenderingContext2D;
   contextElement: HTMLDivElement;
-  lastPos: any;
-  mousePos: any;
   fileHandle: any;
   fileWriter: any;
   contextAnimation: Animation;
@@ -112,7 +104,6 @@ export class AppCanvas {
 
         that.canvasElement.removeEventListener('click', handler);
       });
-
     }
 
     document.addEventListener('keydown', async (ev) => {
@@ -317,8 +308,8 @@ export class AppCanvas {
     this.fileHandle = fileHandler;
 
     if (this.fileHandle) {
-      const fileContents: any = await readFile(this.fileHandle);
-      console.log(fileContents);
+      const module = await import('../../helpers/files-api');
+      const fileContents: any = await module.readFile(this.fileHandle);
 
       let tempImage = new Image();
       tempImage.onload = async () => {
@@ -342,7 +333,7 @@ export class AppCanvas {
 
       if ((navigator as any).canShare && (navigator as any).canShare(file)) {
         await (navigator as any).share({
-          files: [file],
+          file: file,
           title: 'Whiteboard',
           text: 'Check out this whiteboard from WebBoard https://webboard-app.web.app',
         })
@@ -668,7 +659,8 @@ export class AppCanvas {
 
           console.log('activity object', activityObject);
 
-          await createActivity(handle ? handle.name : name, activityObject);
+          const module = await import('../../services/graph');
+          await module.createActivity(handle ? handle.name : name, activityObject);
         }
         catch (err) {
           console.error(err);
@@ -779,12 +771,15 @@ export class AppCanvas {
 
   async saveImages(images: any[]) {
     console.log('images before cloudSave', images);
-    await saveImagesS(images);
+    
+    const module = await import('../../services/api');
+    await module.saveImagesS(images);
   }
 
   async saveToFS() {
     if ("chooseFileSystemEntries" in window) {
-      this.fileHandle = await getNewFileHandle();
+      const module = await import('../../helpers/files-api');
+      this.fileHandle = await module.getNewFileHandle();
 
       console.log(this.fileHandle);
 
@@ -839,7 +834,7 @@ export class AppCanvas {
     })
     // this.setupMouseEvents();
 
-    this.renderCanvas();
+    // this.renderCanvas();
   }
 
   @Method()
@@ -905,85 +900,149 @@ export class AppCanvas {
     console.log('setting up mouse events');
     this.drawing = false;
 
-    this.mousePos = { x: 0, y: 0 };
+    // this.mousePos = { x: 0, y: 0 };
 
     let points;
 
-    // handle mouse events
-    this.canvasElement.addEventListener("pointerdown", (e) => {
+    // import PointerTracker from 'pointer-tracker';
+    const PointerTracker = await import('pointer-tracker');
 
-      if (this.inkShape === true) {
-        points = [];
-        points.push({ x: e.clientX, y: e.clientY });
-      }
+    let that = this;
 
-      if (e.button !== 2) {
-        if (e.ctrlKey === true) {
-          this.doDrag = true;
-          return;
-        }
-        else {
-          this.doDrag = false;
-        }
+    new PointerTracker.default(this.canvasElement, {
+      start(pointer, event: PointerEvent) {
+        // Called when a pointer is pressed/touched within the element.
+        // pointer - The new pointer. This pointer isn't included in this.currentPointers or
+        //    this.startPointers yet.
+        // event - The event related to this pointer.
 
-        this.canvasElement.setPointerCapture(e.pointerId);
-        this.lastPos = this.getMousePos(e);
+        event.preventDefault();
 
-        if (e.pointerType !== 'touch') {
-          this.drawing = true;
+        console.log('start', pointer, event);
+
+        if (that.inkShape === true) {
+          points = [];
+          points.push({ x: event.clientX, y: event.clientY });
         }
 
-      }
-
-    });
-
-    this.canvasElement.addEventListener("pointerup", async (e) => {
-      console.log('pointerup', points);
-      this.quickSave(e);
-
-      if (this.inkShape === true) {
-        await this.sendInk(points);
-      }
-
-    });
-
-    if ((PointerEvent.prototype as any).getCoalescedEvents) {
-      this.canvasElement.addEventListener("pointermove", (e: PointerEvent) => {
-        this.mousePos = this.getMousePos(e);
-
-        if (this.inkShape === true && points) {
-          points.push({ x: e.clientX, y: e.clientY });
+        if (event.pointerType !== 'touch') {
+          that.drawing = true;
         }
 
-        if (e.pointerType === "touch") {
-          this.drawing = true;
-        }
+        return true;
 
-        const allEvents = (e as any).getCoalescedEvents();
-        if (allEvents.length > 0) {
-          for (let i = 0; i < allEvents.length; i++) {
-            if (i === allEvents.length - 1) {
-              this.mousePos = this.getMousePos(allEvents[i]);
+
+      },
+      move(previousPointers, changedPointers, /*event: PointerEvent*/) {
+        // Called when pointers have moved.
+        // previousPointers - The state of the pointers before this event. This contains the same number
+        //   of pointers, in the same order, as this.currentPointers and this.startPointers.
+        // changedPointers - The pointers that have changed since the last move callback.
+        // event - The event related to the pointer changes.
+
+        if (that.mode === 'pen') {
+
+          changedPointers.forEach((pointer) => {
+            const previous = previousPointers.find(p => p.id === pointer.id);
+
+            if (that.inkShape === true) {
+              points.push({ x: pointer.clientX, y: pointer.clientY });
             }
-          }
+
+            if ((pointer.nativePointer as PointerEvent).pointerType === 'pen') {
+              let tweakedPressure = (pointer.nativePointer as PointerEvent).pressure * 6;
+              that.context.lineWidth = (pointer.nativePointer as PointerEvent).width + tweakedPressure;
+
+              if ((pointer.nativePointer as PointerEvent).buttons === 32 && (pointer.nativePointer as PointerEvent).button === -1) {
+                // eraser
+
+                that.context.globalCompositeOperation = 'destination-out';
+                that.context.beginPath();
+                that.context.moveTo(previous.clientX, previous.clientY);
+                for (const point of pointer.getCoalesced()) {
+                  that.context.lineTo(point.clientX, point.clientY);
+                }
+                that.context.stroke();
+              }
+              else {
+                that.context.globalCompositeOperation = 'source-over';
+
+                that.context.beginPath();
+                that.context.moveTo(previous.clientX, previous.clientY);
+                for (const point of pointer.getCoalesced()) {
+                  that.context.lineTo(point.clientX, point.clientY);
+                }
+                that.context.stroke();
+              }
+            }
+            else if ((pointer.nativePointer as PointerEvent).pointerType === 'touch') {
+              that.context.lineWidth = (pointer.nativePointer as PointerEvent).width - 20;
+
+              changedPointers.forEach((pointer) => {
+                that.context.beginPath();
+                that.context.moveTo(previous.clientX, previous.clientY);
+                for (const point of pointer.getCoalesced()) {
+                  that.context.lineTo(point.clientX, point.clientY);
+                }
+                that.context.stroke();
+              });
+            }
+            else if ((pointer.nativePointer as PointerEvent).pointerType === 'mouse') {
+              that.context.lineWidth = 4;
+
+              changedPointers.forEach((pointer) => {
+                that.context.beginPath();
+                that.context.moveTo(previous.clientX, previous.clientY);
+                for (const point of pointer.getCoalesced()) {
+                  that.context.lineTo(point.clientX, point.clientY);
+                }
+                that.context.stroke();
+              });
+            }
+          })
+        }
+        else if (that.mode === 'erase') {
+          that.context.globalCompositeOperation = 'destination-out';
+          /*this.context.beginPath();
+          this.context.moveTo(this.lastPos.x, this.lastPos.y);
+          this.context.lineTo(this.mousePos.x, this.mousePos.y);
+
+          this.context.lineWidth = 60;
+
+          this.context.stroke();
+          this.context.closePath();
+
+          this.lastPos = this.mousePos;*/
+
+          changedPointers.forEach((pointer) => {
+            const previous = previousPointers.find(p => p.id === pointer.id);
+
+            that.context.beginPath();
+            that.context.moveTo(previous.clientX, previous.clientY);
+            for (const point of pointer.getCoalesced()) {
+              that.context.lineTo(point.clientX, point.clientY);
+            }
+            that.context.stroke();
+          });
+        }
+      },
+      async end(pointer, event, cancelled) {
+        // Called when a pointer is released.
+        // pointer - The final state of the pointer that ended. This pointer is now absent from
+        //   this.currentPointers and this.startPointers.
+        // event - The event related to this pointer.
+        // cancelled - True if the event was cancelled.  Actions are cancelled when the OS takes over
+        //   pointer events, for actions such as scrolling.
+
+        that.quickSave(event);
+
+        if (that.inkShape === true) {
+          await that.sendInk(points);
         }
 
-      });
-    }
-    else {
-      this.canvasElement.addEventListener("pointermove", (e: PointerEvent) => {
-        this.mousePos = this.getMousePos(e);
-
-        if (this.inkShape && points) {
-          points.push({ x: e.clientX, y: e.clientY });
-        }
-
-        if (e.pointerType === "touch") {
-          this.drawing = true;
-        }
-
-      });
-    }
+        console.log(pointer, event, cancelled);
+      },
+    });
   }
 
   quickInkSave() {
@@ -1063,7 +1122,7 @@ export class AppCanvas {
     this.drawing = false;
 
     // this.lastPos = this.getMousePos(this.canvasElement, e);
-    this.lastPos = null;
+    // this.lastPos = null;
 
     (window as any).requestIdleCallback(async () => {
       let canvasState = this.canvasElement.toDataURL();
@@ -1087,83 +1146,6 @@ export class AppCanvas {
       }, 400);
 
     })
-  }
-
-  getMousePos(mouseEvent: PointerEvent) {
-    return {
-      x: mouseEvent.clientX - this.rect.left,
-      y: mouseEvent.clientY - this.rect.top,
-      width: mouseEvent.width,
-      type: mouseEvent.pointerType,
-      ctrlKey: mouseEvent.ctrlKey,
-      pressure: mouseEvent.pressure,
-      button: mouseEvent.button,
-      buttons: mouseEvent.buttons,
-      mouseX: mouseEvent.x,
-      mouseY: mouseEvent.y
-    };
-  }
-
-  renderCanvas() {
-    if (this.drawing !== false && this.mode === 'pen') {
-
-      if (this.lastPos) {
-        this.context.globalCompositeOperation = 'source-over';
-        this.context.beginPath();
-        this.context.moveTo(this.lastPos.x, this.lastPos.y);
-        this.context.lineTo(this.mousePos.x, this.mousePos.y);
-
-        if (this.mousePos.type === 'pen') {
-          let tweakedPressure = this.mousePos.pressure * 6;
-          this.context.lineWidth = this.mousePos.width + tweakedPressure;
-
-          if (this.mousePos.buttons === 32 && this.mousePos.button === -1) {
-            // eraser
-
-            this.context.globalCompositeOperation = 'destination-out';
-            this.context.beginPath();
-            this.context.moveTo(this.lastPos.x, this.lastPos.y);
-            this.context.lineTo(this.mousePos.x, this.mousePos.y);
-
-            this.context.lineWidth = 60;
-
-            this.context.stroke();
-            this.context.closePath();
-
-            this.lastPos = this.mousePos;
-          }
-        }
-        else if (this.mousePos.type !== 'mouse' && this.mousePos.type !== 'pen') {
-          this.context.lineWidth = this.mousePos.width - 20;
-        }
-        else if (this.mousePos.type !== 'touch' && this.mousePos.type !== 'pen') {
-          this.context.lineWidth = 4;
-        }
-
-        this.context.stroke();
-        this.context.closePath();
-      }
-
-      this.lastPos = this.mousePos;
-
-    }
-    else if (this.drawing !== false && this.mode === 'erase') {
-      this.context.globalCompositeOperation = 'destination-out';
-      this.context.beginPath();
-      this.context.moveTo(this.lastPos.x, this.lastPos.y);
-      this.context.lineTo(this.mousePos.x, this.mousePos.y);
-
-      if (this.mousePos.type === 'mouse') {
-        this.context.lineWidth = 30;
-      }
-
-      this.context.stroke();
-      this.context.closePath();
-
-      this.lastPos = this.mousePos;
-    }
-
-    requestAnimationFrame(() => this.renderCanvas());
   }
 
   @Method()
@@ -1245,7 +1227,9 @@ export class AppCanvas {
             await this.saveCanvas(name);
 
             const imageUrl = this.canvasElement.toDataURL();
-            const imageBlob = b64toBlob(imageUrl.replace("data:image/png;base64,", ""), 'image/jpg');
+            
+            const module = await import('../../helpers/utils');
+            const imageBlob = module.b64toBlob(imageUrl.replace("data:image/png;base64,", ""), 'image/jpg');
 
             console.log(imageBlob);
 
@@ -1264,9 +1248,8 @@ export class AppCanvas {
                 const fileUpload = await graphClient.api(`/me/drive/items/${driveItem.id}:/${name}.jpg:/content`).middlewareOptions((window as any).mgt.prepScopes('user.read', 'files.readwrite')).put(imageBlob);
                 console.log(fileUpload);
 
-
-
-                await exportToOneNote(fileUpload.webUrl, name);
+                const module = await import('../../services/graph');
+                await module.exportToOneNote(fileUpload.webUrl, name);
 
               }
               catch (err) {
