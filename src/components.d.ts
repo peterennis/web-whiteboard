@@ -15,15 +15,13 @@ export namespace Components {
         "color": string;
         "dragMode": boolean;
         "drawGrid": () => Promise<unknown>;
-        "exportToOneNote": () => Promise<void>;
         "inkToShape": () => Promise<void>;
         "liveConnect": () => Promise<void>;
         "mode": string;
         "resizeCanvas": (width?: number, height?: number) => Promise<void>;
-        "saveCanvas": (name: string) => Promise<void>;
+        "saveCanvas": (name: string, fileHandle?: any) => Promise<any>;
         "savedDrawing": string | null;
         "shareCanvas": () => Promise<void>;
-        "writeNativeFile": (fileHandler: any) => Promise<void>;
     }
     interface AppControls {
     }
@@ -34,6 +32,8 @@ export namespace Components {
     interface AppImages {
     }
     interface AppIntro {
+    }
+    interface AppLogin {
     }
     interface AppProfile {
         "name": string;
@@ -95,6 +95,12 @@ declare global {
     var HTMLAppIntroElement: {
         prototype: HTMLAppIntroElement;
         new (): HTMLAppIntroElement;
+    };
+    interface HTMLAppLoginElement extends Components.AppLogin, HTMLStencilElement {
+    }
+    var HTMLAppLoginElement: {
+        prototype: HTMLAppLoginElement;
+        new (): HTMLAppLoginElement;
     };
     interface HTMLAppProfileElement extends Components.AppProfile, HTMLStencilElement {
     }
@@ -163,6 +169,7 @@ declare global {
         "app-home": HTMLAppHomeElement;
         "app-images": HTMLAppImagesElement;
         "app-intro": HTMLAppIntroElement;
+        "app-login": HTMLAppLoginElement;
         "app-profile": HTMLAppProfileElement;
         "app-root": HTMLAppRootElement;
         "app-settings": HTMLAppSettingsElement;
@@ -206,6 +213,8 @@ declare namespace LocalJSX {
     }
     interface AppIntro {
     }
+    interface AppLogin {
+    }
     interface AppProfile {
         "name"?: string;
     }
@@ -240,6 +249,7 @@ declare namespace LocalJSX {
         "app-home": AppHome;
         "app-images": AppImages;
         "app-intro": AppIntro;
+        "app-login": AppLogin;
         "app-profile": AppProfile;
         "app-root": AppRoot;
         "app-settings": AppSettings;
@@ -262,6 +272,7 @@ declare module "@stencil/core" {
             "app-home": LocalJSX.AppHome & JSXBase.HTMLAttributes<HTMLAppHomeElement>;
             "app-images": LocalJSX.AppImages & JSXBase.HTMLAttributes<HTMLAppImagesElement>;
             "app-intro": LocalJSX.AppIntro & JSXBase.HTMLAttributes<HTMLAppIntroElement>;
+            "app-login": LocalJSX.AppLogin & JSXBase.HTMLAttributes<HTMLAppLoginElement>;
             "app-profile": LocalJSX.AppProfile & JSXBase.HTMLAttributes<HTMLAppProfileElement>;
             "app-root": LocalJSX.AppRoot & JSXBase.HTMLAttributes<HTMLAppRootElement>;
             "app-settings": LocalJSX.AppSettings & JSXBase.HTMLAttributes<HTMLAppSettingsElement>;

@@ -28,55 +28,14 @@ export class AppImages {
 
   async componentWillLoad() {
     (window as any).requestIdleCallback(async () => {
-      let provider = (window as any).mgt.Providers.globalProvider;
-      const account = provider._userAgentApplication.getAccount();
-
-      if (account !== null) {
-        this.showUpload = true;
-      }
 
       const images: any[] = await get('images');
 
       if (images) {
         setTimeout(async () => {
           this.images = await cleanImages(images);
-
-          const imageWorker = new Worker('/assets/canvas-worker.js');
-          imageWorker.postMessage({ name: 'cloudImages', data: this.images });
-
-          imageWorker.onmessage = (message) => {
-            console.log(message.data);
-
-            this.cloudImages = message.data;
-
-            imageWorker.terminate();
-          }
         }, 250);
       }
-      else {
-        const loading = await loadingController.create({
-          message: "Loading images from the cloud...",
-          showBackdrop: navigator.userAgent.includes('iPad') === false && window.matchMedia("(min-width: 1450px)").matches ? false : true
-        });
-        await loading.present();
-
-        try {
-          const module = await import('../../services/api');
-          const data = await module.getSavedImages();
-          console.log(data);
-
-          this.images = await cleanImages(data.images);
-
-          await loading.dismiss();
-
-          await set('images', this.images);
-        }
-        catch (err) {
-          console.error(err);
-          await loading.dismiss();
-        }
-      }
-
     }, {
       timeout: 2000
     })
@@ -121,8 +80,8 @@ export class AppImages {
     }
   }
 
-  async choose(url: string, name: string) {
-    (this.el.closest('ion-modal') as any).dismiss({ url, name });
+  async choose(url: string, name: string, handle) {
+    (this.el.closest('ion-modal') as any).dismiss({ url, name, handle });
   }
 
   async delete(event, imagePicked) {
@@ -171,41 +130,6 @@ export class AppImages {
     ev.preventDefault();
   }
 
-  async showDevices(name: string) {
-    const module = await import('../../services/graph');
-    const devices = await module.getWindowsDevices();
-    console.log(devices);
-
-    let deviceButtons = [];
-
-    devices.forEach((device) => {
-      deviceButtons.push({
-        text: device.Model || device.Name,
-        handler: async () => {
-          const provider = (window as any).mgt.Providers.globalProvider;
-          const user = provider.graph.client.config.middleware.authenticationProvider._userAgentApplication.account;
-
-          await module.sendCommand(device.id, `https://webboard-app.web.app/boards/${name}/${user.name}/board`);
-
-          const toast = await toastCtrl.create({
-            message: `Opened board on ${device.Model || device.Name}`,
-            duration: 1800
-          });
-          await toast.present();
-        }
-      })
-    })
-
-    if (deviceButtons) {
-      const sheet = await alertController.create({
-        header: "Share",
-        subHeader: 'Share to your devices',
-        buttons: deviceButtons
-      });
-      await sheet.present();
-    }
-  }
-
   async chooseCloudItem(id: number, name: string) {
     let provider = (window as any).mgt.Providers.globalProvider;
     let graphClient = provider.graph.client;
@@ -219,9 +143,9 @@ export class AppImages {
       console.log(response);
       const data = await response.blob();
 
-      console.log(data);
+      console.log(data, name);
 
-      this.choose(URL.createObjectURL(data), name);
+      // this.choose(URL.createObjectURL(data), name);
     }
     catch (err) {
       console.log(err, err.message);
@@ -452,18 +376,6 @@ export class AppImages {
     this.imageSection = event.target.value;
   }
 
-  async openNativeFile() {
-    const module = await import('../../helpers/files-api');
-    const file_handle = await module.getFileHandle();
-    console.log(file_handle);
-
-    if (file_handle) {
-      document.querySelector('app-canvas').writeNativeFile(file_handle);
-    }
-
-    this.close();
-  }
-
   render() {
     return [
       <ion-header no-border id="imagesHeaderEl">
@@ -477,10 +389,6 @@ export class AppImages {
             <ion-button onClick={() => this.refreshImages()}>
               <ion-icon name="refresh-circle-outline"></ion-icon>
             </ion-button>
-
-            {"chooseFileSystemEntries" in window ? <ion-button onClick={() => this.openNativeFile()}>
-              <ion-icon name="folder-outline"></ion-icon>
-            </ion-button> : null}
 
             <ion-button onClick={() => this.close()}>
               <ion-icon name='close'></ion-icon>
@@ -496,7 +404,7 @@ export class AppImages {
 
           <ion-searchbar id="imageBar" onIonChange={(event) => this.searchImages(event)} debounce={250} animated placeholder="search"></ion-searchbar>
 
-          <ion-toolbar id="segmentToolbar">
+          {/*<ion-toolbar id="segmentToolbar">
             <ion-segment mode="ios" value="local" onIonChange={(event) => this.segmentChange(event)}>
               <ion-segment-button mode="ios" value="local">
                 <ion-label>All</ion-label>
@@ -505,7 +413,7 @@ export class AppImages {
                 <ion-label>Cloud</ion-label>
               </ion-segment-button>
             </ion-segment>
-          </ion-toolbar>
+    </ion-toolbar>*/}
 
           {this.images ?
 
@@ -532,25 +440,13 @@ export class AppImages {
                               {/*<ion-button icon-only fill="clear" onClick={(event) => this.openToSide(image.name, event)}>
                                 <ion-icon name="swap"></ion-icon>
                     </ion-button>*/}
-
-                              <ion-button icon-only fill="clear" onClick={() => this.showDevices(image.name)}>
-                                <ion-icon name="tablet-portrait-outline"></ion-icon>
-                              </ion-button>
-
-                              {!image.id && this.showUpload ? <ion-button onClick={(event) => this.uploadToDrive(image, event)} icon-only fill="clear">
-                                <ion-icon name="cloud-upload-outline"></ion-icon>
-                              </ion-button> :
-                                <ion-button onClick={(event) => this.share(image.id, image, event)} icon-only fill="clear">
-                                  <ion-icon name="share-outline"></ion-icon>
-                                </ion-button>
-                              }
                             </ion-buttons>
                           </div>
                         </ion-card-header>
 
-                        <img loading="lazy" onClick={() => this.choose(image.url, image.name)} src={image.url} alt={image.name}></img>
+                        <img loading="lazy" onClick={() => this.choose(image.url, image.name, image.handle)} src={image.url} alt={image.name}></img>
 
-                        <ion-card-content onClick={() => this.choose(image.url, image.name)}>
+                        <ion-card-content onClick={() => this.choose(image.url, image.name, image.handle)}>
                           <div id="imageTags">
                             {image.tags && image.tags.length > 0 ? <p id="tagsP">Tags: </p> : null}
                             {
@@ -620,66 +516,8 @@ export class AppImages {
                   })
               }
             </div>
-            : <div id="imageList">
-              <ion-card>
-                <ion-card-header>
-                  <ion-card-subtitle><ion-skeleton-text></ion-skeleton-text></ion-card-subtitle>
-                  <ion-card-title>
-                    <h2><ion-skeleton-text></ion-skeleton-text></h2>
-                  </ion-card-title>
-                </ion-card-header>
-
-                <ion-card-content>
-                  <div id="loadingContent">
-                    <ion-skeleton-text></ion-skeleton-text>
-                  </div>
-                </ion-card-content>
-              </ion-card>
-
-              <ion-card>
-                <ion-card-header>
-                  <ion-card-subtitle><ion-skeleton-text></ion-skeleton-text></ion-card-subtitle>
-                  <ion-card-title>
-                    <h2><ion-skeleton-text></ion-skeleton-text></h2>
-                  </ion-card-title>
-                </ion-card-header>
-
-                <ion-card-content>
-                  <div id="loadingContent">
-                    <ion-skeleton-text></ion-skeleton-text>
-                  </div>
-                </ion-card-content>
-              </ion-card>
-
-              <ion-card>
-                <ion-card-header>
-                  <ion-card-subtitle><ion-skeleton-text></ion-skeleton-text></ion-card-subtitle>
-                  <ion-card-title>
-                    <h2><ion-skeleton-text></ion-skeleton-text></h2>
-                  </ion-card-title>
-                </ion-card-header>
-
-                <ion-card-content>
-                  <div id="loadingContent">
-                    <ion-skeleton-text></ion-skeleton-text>
-                  </div>
-                </ion-card-content>
-              </ion-card>
-
-              <ion-card>
-                <ion-card-header>
-                  <ion-card-subtitle><ion-skeleton-text></ion-skeleton-text></ion-card-subtitle>
-                  <ion-card-title>
-                    <h2><ion-skeleton-text></ion-skeleton-text></h2>
-                  </ion-card-title>
-                </ion-card-header>
-
-                <ion-card-content>
-                  <div id="loadingContent">
-                    <ion-skeleton-text></ion-skeleton-text>
-                  </div>
-                </ion-card-content>
-              </ion-card>
+            : <div id="noImages">
+               <h3>No Boards Saved</h3>
             </div>}
         </div>
       </ion-content>

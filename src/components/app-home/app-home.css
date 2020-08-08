@@ -5,12 +5,28 @@
 #pwaInstallButton {
   position: fixed;
   z-index: -1;
-  top: 20px;
-  right: 18em;
+  top: 18px;
+  right: 6em;
 }
 
 pwa-install {
   --install-button-color: var(--ion-color-primary) !important;
+}
+
+pwa-auth {
+  position: absolute;
+  right: 5em;
+  top: 14px;
+}
+
+pwa-auth::part(signInButton) {
+  background: var(--ion-color-primary);
+  color: white;
+  padding: 10px;
+  text-transform: uppercase;
+  border-radius: 22px;
+  padding-left: 2em;
+  padding-right: 2em;
 }
 
 #signInText {
@@ -46,10 +62,7 @@ pwa-install {
   align-items: center;
   justify-content: space-around;
   background: white;
-
-  box-shadow: 0px 0px 10px 1px rgba(0, 0, 0, 0.37);
   border-radius: 24px;
-  min-width: 202px;
   z-index: -1;
 }
 
@@ -85,8 +98,8 @@ app-canvas {
     display: none;
   }
 
-  #settingsBlock {
-    min-width: 140px;
+  pwa-auth {
+    display: none;
   }
 }
 

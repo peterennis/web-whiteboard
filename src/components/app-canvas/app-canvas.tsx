@@ -1,13 +1,18 @@
 import { Component, Element, Prop, State, Watch, Method, h } from '@stencil/core';
-import { toastController as toastCtrl, alertController as alertCtrl, modalController, toastController, alertController } from '@ionic/core';
+import { toastController as toastCtrl, alertController as alertCtrl, toastController, alertController, modalController } from '@ionic/core';
 
 import { debounce } from "typescript-debounce-decorator";
 import { set, get, del } from 'idb-keyval';
+import { fileSave } from 'browser-nativefs';
 
 import { findLocalImage, doAI, getInkInfo } from '../../canvas.worker';
+import { randoRoom } from '../../helpers/utils';
+import { getAccount } from '../../services/auth';
+import { sendRoomInvite } from '../../services/graph';
 
 
 declare var ClipboardItem;
+declare var io: any;
 
 @Component({
   tag: 'app-canvas',
@@ -28,6 +33,9 @@ export class AppCanvas {
   @State() doDrag: boolean = false;
   @State() saving: boolean = false;
   @State() inkShape: boolean = false;
+  @State() room: string | null = null;
+
+  @Prop({ connect: 'ion-router' }) nav: HTMLIonRouterElement;
 
   canvasElement: HTMLCanvasElement;
   gridCanvas: HTMLCanvasElement;
@@ -44,30 +52,23 @@ export class AppCanvas {
   offscreen = null;
   gridWorker = null;
   dragToast: HTMLIonToastElement;
+  socket: any = null;
 
-  componentDidLoad() {
+  async componentDidLoad() {
     window.addEventListener('resize', () => {
       console.log('resizing');
       this.resizeCanvas();
     });
 
-    (window as any).requestIdleCallback(() => {
-      this.setupCanvas();
-    });
-
     (window as any).requestIdleCallback(async () => {
-      const canvasState = await (get('canvasState') as any);
-
-      if (canvasState && !this.savedDrawing) {
-        const tempImage = new Image();
-        tempImage.onload = () => {
-          this.context.drawImage(tempImage, 0, 0);
-        }
-        tempImage.src = canvasState;
-      }
+      await this.setupCanvas();
     });
 
     this.setupEvents();
+
+    if (location.search === "?startLive") {
+      await this.liveConnect();
+    }
   }
 
   setupEvents() {
@@ -105,17 +106,6 @@ export class AppCanvas {
         that.canvasElement.removeEventListener('click', handler);
       });
     }
-
-    document.addEventListener('keydown', async (ev) => {
-      if (ev.key.toLowerCase() === "s".toLowerCase() && ev.shiftKey && ev.ctrlKey) {
-        console.log('here');
-        await this.saveToFS();
-      }
-
-      else if (ev.key.toLowerCase() === "s".toLowerCase() && ev.ctrlKey) {
-        this.quickSave(ev);
-      }
-    })
   }
 
   @Method()
@@ -304,27 +294,6 @@ export class AppCanvas {
   }
 
   @Method()
-  async writeNativeFile(fileHandler) {
-    this.fileHandle = fileHandler;
-
-    if (this.fileHandle) {
-      const module = await import('../../helpers/files-api');
-      const fileContents: any = await module.readFile(this.fileHandle);
-
-      let tempImage = new Image();
-      tempImage.onload = async () => {
-        console.log('image loaded');
-
-        this.context.drawImage(tempImage, 0, 0);
-        this.setupMouseEvents();
-
-        tempImage = null
-      }
-      tempImage.src = fileContents;
-    }
-  }
-
-  @Method()
   async shareCanvas() {
     this.canvasElement.toBlob(async (blob) => {
       console.log(blob);
@@ -441,25 +410,111 @@ export class AppCanvas {
   async liveConnect() {
     const alert = await alertCtrl.create({
       header: "Live Session",
-      message: "Start a live session and draw in real time with a teammate?",
+      message: "Start a live session and draw in real time with a teammate? If you already have a session ID you can input it below to join.",
+      inputs: [
+        {
+          name: 'sessionID',
+          type: 'text',
+          placeholder: 'Enter your session ID'
+        },
+      ],
       buttons: [
         {
           text: "Cancel"
         },
         {
-          text: "Choose Teammates",
-          handler: async () => {
-            const modal = await modalController.create({
-              component: "contacts-modal"
-            });
+          text: "Start",
+          handler: async (data) => {
 
-            await modal.present();
+            if (data.sessionID) {
+              const navCtrl: HTMLIonRouterElement = await (this.nav as any).componentOnReady();
+              await navCtrl.push(`/live/${data.sessionID}`);
+            }
+            else {
+              const room = randoRoom();
+
+              const navCtrl: HTMLIonRouterElement = await (this.nav as any).componentOnReady();
+              await navCtrl.push(`/live/${room}`);
+            }
           }
         }
       ],
       backdropDismiss: false
     });
     await alert.present();
+  }
+
+  socket_connect(room: any) {
+    return io('https://live-canvas-server.azurewebsites.net/', {
+      query: 'r_var=' + room
+    });
+  }
+
+  setupLiveEvents() {
+    const secondCanvas: HTMLCanvasElement | null | undefined = this.el?.querySelector('#secondCanvas');
+    const secondContext = secondCanvas?.getContext("bitmaprenderer");
+
+    if (secondCanvas) {
+      secondCanvas.width = window.innerWidth;
+      secondCanvas.height = window.innerHeight;
+    }
+
+    const thirdContext = this.context;
+
+    let offscreenContext;
+    let offscreen;
+
+    if ('OffscreenCanvas' in window) {
+      offscreen = new OffscreenCanvas(window.innerWidth, window.innerHeight);
+      offscreenContext = offscreen.getContext('2d');
+    }
+
+    if (offscreenContext) {
+      offscreenContext.font = '20px sans-serif';
+    }
+
+    this.socket.on('drawing', (data: any) => {
+      if (thirdContext) {
+        thirdContext.strokeStyle = data.color;
+
+        thirdContext.globalCompositeOperation = data.globalCompositeOperation;
+
+        if (data.pointerType === 'pen') {
+          let tweakedPressure = data.pressure * 6;
+          thirdContext.lineWidth = data.width + tweakedPressure;
+        }
+
+        else if (data.pointerType === 'touch') {
+          thirdContext.lineWidth = data.width - 20;
+        }
+        else if (data.pointerType === 'mouse') {
+          thirdContext.lineWidth = 4;
+        }
+
+        if (data.globalCompositeOperation === 'destination-out') {
+          thirdContext.lineWidth = 18;
+        }
+
+        if (data.user && offscreenContext) {
+          offscreenContext?.fillText(data.user, data.x0 + 14, data.y0);
+
+          let bitmapOne = offscreen.transferToImageBitmap();
+          secondContext?.transferFromImageBitmap(bitmapOne);
+        }
+
+
+        thirdContext.beginPath();
+
+        thirdContext.moveTo(data.x0, data.y0);
+
+
+        thirdContext.lineTo(data.x1, data.y1);
+
+
+        thirdContext.stroke();
+      }
+
+    });
   }
 
   async doTextCopy() {
@@ -551,11 +606,13 @@ export class AppCanvas {
   }
 
   @Method()
-  async saveCanvas(name: string) {
+  async saveCanvas(name: string, fileHandle?) {
     const canvasImage = this.canvasElement.toDataURL();
     const images: any[] = await get('images');
 
     const localImage: any = await findLocalImage(images, name);
+
+    let handle = null;
 
     // AI
     const aiToken = localStorage.getItem('ai');
@@ -564,7 +621,7 @@ export class AppCanvas {
       const data = await doAI(canvasImage);
 
       if (images) {
-        const handle = await this.saveToFS();
+        const handle = await this.saveToFS(fileHandle);
 
         const desc = data.description.captions[0] ? data.description.captions[0].text : "No Description";
 
@@ -595,102 +652,26 @@ export class AppCanvas {
         }
         else {
           if (handle) {
-            images.push({ name: handle.name, color: data.color, desc, tags: data.tags, url: canvasImage });
+            images.push({ name: handle.name, handle: handle, color: data.color, desc, tags: data.tags, url: canvasImage });
           }
           else {
-            images.push({ name, color: data.color, desc, tags: data.tags, url: canvasImage });
+            images.push({ name, color: data.color, handle: handle, desc, tags: data.tags, url: canvasImage });
           }
-        }
-
-        try {
-          const provider = (window as any).mgt.Providers.globalProvider;
-          const user = provider.graph.client.config.middleware.authenticationProvider._userAgentApplication.account;
-
-          //const appActivityId = `/board?name=${handle ? handle.name : name}&username=${user.name}`;
-
-          // weird format because graph
-          //const goodTime = `${new Date().getFullYear()}-${new Date().getMonth() + 1}-${new Date().getUTCDate()}T${new Date().getUTCHours().toString().length > 1 ? null : 0}${new Date().getUTCHours()}:${new Date().getUTCMinutes().toString().length > 1 ? null : 0}${new Date().getUTCMinutes()}:${new Date().getUTCSeconds()}.${new Date().getUTCMilliseconds()}Z`;
-          //const goodTime2 = `${new Date().getFullYear()}-${new Date().getMonth() + 1}-${new Date().getUTCDate()}T${new Date().getUTCHours().toString().length > 1 ? null : 0}${new Date().getUTCHours()}:${new Date().getUTCMinutes() + 3}:${new Date().getUTCSeconds()}.${new Date().getUTCMilliseconds()}Z`
-
-          const activityObject = {
-            "appActivityId": `/boards?${handle ? handle.name : name}`,
-            "activitySourceHost": 'https://webboard-app.web.app',
-            "userTimezone": Intl.DateTimeFormat().resolvedOptions().timeZone,
-            "appDisplayName": "Webboard",
-            "activationUrl": `https://webboard-app.web.app/boards/${handle ? handle.name : name}/${user.name}/board`,
-            "fallbackUrl": "https://webboard-app.web.app",
-            "contentInfo": {
-              "@context": "http://schema.org",
-              "@type": "CreativeWork",
-              "author": user.name,
-              "name": "Webboard"
-            },
-            "visualElements": {
-              "attribution": {
-                "iconUrl": "https://webboard-app.web.app/icons/android/android-launchericon-64-64.png",
-                "alternateText": "Webboard",
-                "addImageQuery": "false"
-              },
-              "description": "Access your saved board here",
-              "backgroundColor": "#1976d2",
-              "displayText": `You saved a new board: ${handle ? handle.name : name}`,
-              "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "body": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Always access your latest board here!"
-                  }
-                ]
-              }
-            },
-
-
-            /*"historyItems": [
-              {
-                "userTimezone": "America/Los Angeles",
-                                    2019-12-18T09:05:48.401Z
-                "startedDateTime": "2019-12-18T07:44:23.299Z",
-                "lastActiveDateTime": "2019-12-18T08:44:23.299Z"
-              }
-            ]*/
-          };
-
-          console.log('activity object', activityObject);
-
-          const module = await import('../../services/graph');
-          await module.createActivity(handle ? handle.name : name, activityObject);
-        }
-        catch (err) {
-          console.error(err);
         }
 
         await set('images', images);
-
-        let remoteImages = [];
-
-        images.forEach((image) => {
-          console.log('image', image);
-          if (image) {
-            remoteImages.push(image);
-          }
-        });
-
-
-        await this.saveImages(remoteImages);
       }
       else {
-        const handle = await this.saveToFS();
+        const handle = await this.saveToFS(fileHandle);
 
 
         const desc = data.description.captions[0] ? data.description.captions[0].text : "No Description";
 
         if (handle) {
-          await set('images', [{ name: handle.name, color: data.color, tags: data.tags, url: canvasImage, desc }]);
+          await set('images', [{ name: handle.name, handle: handle, color: data.color, tags: data.tags, url: canvasImage, desc }]);
         }
         else {
-          await set('images', [{ name, color: data.color, tags: data.tags, url: canvasImage, desc }]);
+          await set('images', [{ name, color: data.color, handle: handle, tags: data.tags, url: canvasImage, desc }]);
         }
 
         // await this.saveImages(remoteImages);
@@ -699,7 +680,7 @@ export class AppCanvas {
     }
     else {
       if (images) {
-        const handle = await this.saveToFS();
+        handle = await this.saveToFS(fileHandle);
         console.log(handle);
         /*if (handle) {
           images.push({ name: handle.name, url: canvasImage });
@@ -720,34 +701,23 @@ export class AppCanvas {
         }
         else {
           if (handle) {
-            images.push({ name: handle.name, url: canvasImage });
+            images.push({ name: handle.name, handle: handle, url: canvasImage });
           }
           else {
-            images.push({ name, url: canvasImage });
+            images.push({ name, url: canvasImage, handle: handle });
           }
         }
 
         await set('images', images);
-
-        let remoteImages = [];
-
-        images.forEach((image) => {
-          console.log(image);
-          if (image) {
-            remoteImages.push(image);
-          }
-        });
-
-        await this.saveImages(remoteImages);
       }
       else {
-        const handle = await this.saveToFS();
+        handle = await this.saveToFS(fileHandle);
 
         if (handle) {
-          await set('images', [{ name: handle.name, url: canvasImage }]);
+          await set('images', [{ name: handle.name, handle: handle, url: canvasImage }]);
         }
         else {
-          await set('images', [{ name, url: canvasImage }]);
+          await set('images', [{ name, url: canvasImage, handle: handle }]);
         }
 
         /*if (images) {
@@ -767,46 +737,46 @@ export class AppCanvas {
 
     URL.revokeObjectURL(canvasImage);
 
+    return fileHandle || handle;
+
   }
 
-  async saveImages(images: any[]) {
-    console.log('images before cloudSave', images);
-    
-    const module = await import('../../services/api');
-    await module.saveImagesS(images);
-  }
+  async saveToFS(fileHandle?): Promise<any> {
 
-  async saveToFS() {
-    if ("chooseFileSystemEntries" in window) {
-      const module = await import('../../helpers/files-api');
-      this.fileHandle = await module.getNewFileHandle();
+    return new Promise((resolve, reject) => {
+      const options: any = {
+        // Suggested file name to use, defaults to `''`.
+        fileName: 'webboard',
+        extensions: [".jpeg"]
+      };
 
-      console.log(this.fileHandle);
-
-      if (this.fileHandle) {
-        this.fileWriter = await this.fileHandle.createWriter();
-        console.log(this.fileWriter);
-
+      try {
         this.canvasElement.toBlob(async (blob) => {
-          await this.fileWriter.write(0, blob);
-          await this.fileWriter.close();
-        }, 'image/jpeg');
+          if (fileHandle) {
+            this.fileHandle = await fileSave(blob, options, fileHandle);
+          }
+          else {
+            this.fileHandle = await fileSave(blob, options);
+          }
 
-        this.setupMouseEvents();
+          console.log('fileHandle', this.fileHandle);
+
+          resolve(this.fileHandle);
+        });
       }
-
-      return this.fileHandle;
-    }
+      catch (err) {
+        reject(err);
+      }
+    });
   }
 
-  setupCanvas() {
+  async setupCanvas() {
     this.canvasElement.height = window.innerHeight;
     this.canvasElement.width = window.innerWidth;
 
     this.rect = this.canvasElement.getBoundingClientRect();
 
     this.context = (this.canvasElement.getContext('2d', {
-      desynchronized: true
     }) as CanvasRenderingContext2D);
 
     this.context.fillStyle = 'white';
@@ -829,8 +799,8 @@ export class AppCanvas {
 
     console.log(this.color);
 
-    (window as any).requestIdleCallback(() => {
-      this.setupMouseEvents();
+    (window as any).requestIdleCallback(async () => {
+      await this.setupMouseEvents();
     })
     // this.setupMouseEvents();
 
@@ -900,12 +870,14 @@ export class AppCanvas {
     console.log('setting up mouse events');
     this.drawing = false;
 
+    const user = await getAccount();
+
     // this.mousePos = { x: 0, y: 0 };
 
     let points;
 
     // import PointerTracker from 'pointer-tracker';
-    const PointerTracker = await import('pointer-tracker');
+    const PointerTracker = await import('../../helpers/PointerTracker');
 
     let that = this;
 
@@ -941,6 +913,7 @@ export class AppCanvas {
         // event - The event related to the pointer changes.
 
         if (that.mode === 'pen') {
+          that.context.globalCompositeOperation = 'source-over';
 
           changedPointers.forEach((pointer) => {
             const previous = previousPointers.find(p => p.id === pointer.id);
@@ -955,6 +928,8 @@ export class AppCanvas {
 
               if ((pointer.nativePointer as PointerEvent).buttons === 32 && (pointer.nativePointer as PointerEvent).button === -1) {
                 // eraser
+
+                that.context.lineWidth = 15;
 
                 that.context.globalCompositeOperation = 'destination-out';
                 that.context.beginPath();
@@ -978,6 +953,8 @@ export class AppCanvas {
             else if ((pointer.nativePointer as PointerEvent).pointerType === 'touch') {
               that.context.lineWidth = (pointer.nativePointer as PointerEvent).width - 20;
 
+              that.context.globalCompositeOperation = 'source-over';
+
               changedPointers.forEach((pointer) => {
                 that.context.beginPath();
                 that.context.moveTo(previous.clientX, previous.clientY);
@@ -990,6 +967,8 @@ export class AppCanvas {
             else if ((pointer.nativePointer as PointerEvent).pointerType === 'mouse') {
               that.context.lineWidth = 4;
 
+              that.context.globalCompositeOperation = 'source-over';
+
               changedPointers.forEach((pointer) => {
                 that.context.beginPath();
                 that.context.moveTo(previous.clientX, previous.clientY);
@@ -997,6 +976,21 @@ export class AppCanvas {
                   that.context.lineTo(point.clientX, point.clientY);
                 }
                 that.context.stroke();
+              });
+            }
+
+            if (that.socket) {
+              that.socket.emit('drawing', {
+                x0: previous.clientX,
+                y0: previous.clientY,
+                x1: (event as PointerEvent).clientX,
+                y1: (event as PointerEvent).clientY,
+                color: that.color,
+                pointerType: (event as PointerEvent).pointerType,
+                pressure: (event as PointerEvent).pressure,
+                width: (event as PointerEvent).width,
+                globalCompositeOperation: 'source-over',
+                user: user ? user.username : null
               });
             }
           })
@@ -1023,6 +1017,21 @@ export class AppCanvas {
               that.context.lineTo(point.clientX, point.clientY);
             }
             that.context.stroke();
+
+            if (that.socket) {
+              that.socket.emit('drawing', {
+                x0: previous.clientX,
+                y0: previous.clientY,
+                x1: (event as PointerEvent).clientX,
+                y1: (event as PointerEvent).clientY,
+                color: that.color,
+                pointerType: (event as PointerEvent).pointerType,
+                pressure: (event as PointerEvent).pressure,
+                width: (event as PointerEvent).width,
+                globalCompositeOperation: 'source-over',
+                user: user ? user.username : null
+              });
+            }
           });
         }
       },
@@ -1034,8 +1043,6 @@ export class AppCanvas {
         // cancelled - True if the event was cancelled.  Actions are cancelled when the OS takes over
         //   pointer events, for actions such as scrolling.
 
-        that.quickSave(event);
-
         if (that.inkShape === true) {
           await that.sendInk(points);
         }
@@ -1043,6 +1050,30 @@ export class AppCanvas {
         console.log(pointer, event, cancelled);
       },
     });
+
+    const roomNumber = location.pathname.split("/").pop();
+    this.room = roomNumber;
+
+    if (roomNumber) {
+      this.socket = this.socket_connect(roomNumber);
+      this.setupLiveEvents();
+
+      const toast = await toastController.create({
+        message: "You have joined a live session",
+        position: "top",
+        buttons: [
+          {
+            text: 'Ok',
+            role: 'cancel',
+            handler: async () => {
+              await toast.dismiss();
+            }
+          }
+        ],
+        duration: 1200
+      });
+      await toast.present();
+    }
   }
 
   quickInkSave() {
@@ -1114,40 +1145,6 @@ export class AppCanvas {
     this.context.stroke();
   }
 
-  quickSave(e) {
-    e.preventDefault();
-
-    this.saving = true;
-
-    this.drawing = false;
-
-    // this.lastPos = this.getMousePos(this.canvasElement, e);
-    // this.lastPos = null;
-
-    (window as any).requestIdleCallback(async () => {
-      let canvasState = this.canvasElement.toDataURL();
-      await set('canvasState', canvasState);
-
-      if ("chooseFileSystemEntries" in window && this.fileHandle) {
-        console.log('writing to file');
-        this.fileWriter = await this.fileHandle.createWriter();
-
-        console.log('this.fileWriter in pointer up', this.fileWriter);
-        console.log("chooseFileSystemEntries" in window);
-
-        this.canvasElement.toBlob(async (blob) => {
-          await this.fileWriter.write(0, blob);
-          await this.fileWriter.close();
-        }, 'image/jpeg');
-      }
-
-      setTimeout(() => {
-        this.saving = false;
-      }, 400);
-
-    })
-  }
-
   @Method()
   addImageToCanvas(imageString: string, width: number, height: number) {
     this.mode = "something";
@@ -1192,77 +1189,6 @@ export class AppCanvas {
   async inkToShape() {
     this.inkShape = !this.inkShape;
     await this.setupMouseEvents();
-  }
-
-  @Method()
-  async exportToOneNote() {
-    if (this.contextAnimation) {
-      this.contextAnimation.reverse();
-    }
-
-    const alert = await alertCtrl.create({
-      header: "Name",
-      message: "Your board will be uploaded to OneDrive first, what would you like to name it?",
-      inputs: [
-        {
-          placeholder: "My board",
-          name: "name"
-        }
-      ],
-      buttons: [
-        {
-          text: 'Cancel',
-          role: 'cancel',
-          cssClass: 'secondary',
-          handler: () => {
-            console.log('Confirm Cancel')
-          }
-        }, {
-          text: 'Ok',
-          handler: async (data) => {
-            console.log('Confirm Ok', data.name);
-            const name = data.name;
-            console.log(name);
-
-            await this.saveCanvas(name);
-
-            const imageUrl = this.canvasElement.toDataURL();
-            
-            const module = await import('../../helpers/utils');
-            const imageBlob = module.b64toBlob(imageUrl.replace("data:image/png;base64,", ""), 'image/jpg');
-
-            console.log(imageBlob);
-
-            let provider = (window as any).mgt.Providers.globalProvider;
-            if (provider) {
-              let graphClient = provider.graph.client;
-              console.log(graphClient);
-
-              try {
-                const driveItem = await graphClient.api('/me/drive/root/children').middlewareOptions((window as any).mgt.prepScopes('user.read', 'files.readwrite')).post({
-                  "name": "webboard",
-                  "folder": {}
-                });
-                console.log(driveItem);
-
-                const fileUpload = await graphClient.api(`/me/drive/items/${driveItem.id}:/${name}.jpg:/content`).middlewareOptions((window as any).mgt.prepScopes('user.read', 'files.readwrite')).put(imageBlob);
-                console.log(fileUpload);
-
-                const module = await import('../../services/graph');
-                await module.exportToOneNote(fileUpload.webUrl, name);
-
-              }
-              catch (err) {
-                console.error(err);
-              }
-            }
-          }
-        }
-      ]
-    });
-    await alert.present();
-    const data = await alert.onDidDismiss();
-    console.log(data);
   }
 
   async handleDragEnter() {
@@ -1318,6 +1244,76 @@ export class AppCanvas {
     }
   }
 
+  async endSession() {
+    const alert = await alertController.create({
+      header: "End Session?",
+      message: "Would you like to end this live session?",
+      buttons: [
+        {
+          text: 'Cancel',
+          role: 'cancel',
+          cssClass: 'secondary',
+          handler: () => {
+            console.log('Confirm Cancel: blah');
+          }
+        }, {
+          text: 'End',
+          handler: async () => {
+            const navCtrl: HTMLIonRouterElement = await (this.nav as any).componentOnReady();
+            await navCtrl.push(`/`);
+
+            this.room = null;
+          }
+        }
+      ]
+    })
+    await alert.present();
+  }
+
+  async invite() {
+    const user = await getAccount();
+
+    if (user) {
+      const modal = await modalController.create({
+        component: 'contacts-modal'
+      });
+      await modal.present();
+    }
+    else if ('contacts' in navigator && 'ContactsManager' in window) {
+      const props = ['name', 'email'];
+      const opts = { multiple: true };
+
+      try {
+        const contacts = await (navigator as any).contacts.select(props, opts);
+        sendRoomInvite(contacts);
+      } catch (err) {
+        // Handle any errors here.
+        console.error(err);
+      }
+    }
+    else {
+      if (navigator.share) {
+        await navigator.share({
+          title: 'Webboard',
+          text: "Join me on this board",
+          url: location.href,
+        })
+      }
+    }
+  }
+
+  async copySession() {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(this.room);
+
+      const toast = await toastController.create({
+        message: "Session ID copied to clipboard",
+        duration: 1300
+      });
+      await toast.present();
+    }
+  }
+
   render() {
     return [
       <div>
@@ -1337,12 +1333,6 @@ export class AppCanvas {
                 <span>Paste</span>
               </button>
 
-              <button onClick={() => this.exportToOneNote()}>
-                <ion-icon src="/assets/onenote.svg"></ion-icon>
-
-                <span>Export</span>
-              </button>
-
               <button onClick={(event) => this.insertText(event)}>
                 <ion-icon name="text-outline"></ion-icon>
 
@@ -1356,7 +1346,19 @@ export class AppCanvas {
           {this.copyingText ? <ion-spinner></ion-spinner> : <span>Copy Text</span>}
         </button> : null}
 
+        {
+          this.room ? <ion-button id="endButton" shape="round" color="danger" onClick={() => this.endSession()}>End Session <ion-icon slot="end" name="close"></ion-icon></ion-button> : null
+        }
+        {
+          this.room ?
+            <ion-button id="inviteButton" shape="round" color="primary" onClick={() => this.invite()}>Invite
+              <ion-icon slot="end" name="share"></ion-icon>
+            </ion-button> : null
+        }
+
         <canvas id="gridCanvas" ref={(el) => this.gridCanvas = el as HTMLCanvasElement}></canvas>
+
+        <canvas id="secondCanvas"></canvas>
 
         <canvas id="regCanvas" onDragEnter={() => this.handleDragEnter()} onDrop={(event) => this.handleDrop(event)} onDragOver={(event) => this.handleDragOver(event)} ref={(el) => this.canvasElement = el as HTMLCanvasElement}></canvas>
       </div >

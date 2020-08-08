@@ -1,7 +1,8 @@
 import { Component, Element, Prop, Listen, State, h } from '@stencil/core';
-import { modalController as modalCtrl, alertController as alertCtrl, popoverController as popoverCtrl, toastController } from '@ionic/core';
+import { alertController as alertCtrl, popoverController as popoverCtrl, toastController, alertController } from '@ionic/core';
 
 import { set, get } from 'idb-keyval';
+import { fileOpen } from 'browser-nativefs';
 
 import '@pwabuilder/pwainstall';
 
@@ -21,6 +22,7 @@ export class AppHome {
   @State() grid: boolean = false;
   @State() dragMode: boolean = false;
   @State() currentFileName: string | null = null;
+  @State() currentFileHandle: any;
   @State() canInstall: boolean = false;
   @State() spanned: boolean = false;
   // @State() spanned: boolean = true;
@@ -52,14 +54,6 @@ export class AppHome {
         toast.onDidDismiss().then(async () => {
           await set('firstSeen', true);
         });
-      }
-    });
-
-    (window as any).requestIdleCallback(async () => {
-      const loginTest = await get('webboardLoggedIn');
-
-      if (loginTest && loginTest === true) {
-        await this.checkMGT();
       }
     });
 
@@ -110,19 +104,12 @@ export class AppHome {
 
   handleSegments() {
     const segments = (window as any).getWindowSegments();
-    if (segments.length === 2 ) {
+    if (segments.length === 2) {
       this.spanned = true;
     }
     else {
       this.spanned = false;
     }
-  }
-
-  async checkMGT() {
-    await import('../../mgt.js');
-    this.mgtLoaded = true;
-
-    await set('webboardLoggedIn', true);
   }
 
   @Listen('beforeinstallprompt', { target: 'window' })
@@ -141,65 +128,60 @@ export class AppHome {
   }
 
   async clear() {
-    this.currentFileName = null;
+    const appCanvas = this.el.querySelector('app-canvas');
+    const alert = await alertController.create({
+      header: 'Delete this Canvas?',
+      message: 'Are you sure you want to delete the canvas? This will ERASE your current work.',
+      buttons: [{
+        text: "Cancel",
+        cssClass: 'secondary'
+      },
+      {
+        text: 'Yes',
+        handler: async () => {
+          this.currentFileName = null;
 
-    (window as any).requestIdleCallback(async () => {
-      const appCanvas = this.el.querySelector('app-canvas');
-      await appCanvas.clearCanvas();
-    }, {
-      timeout: 2000
+          await appCanvas.clearCanvas();
+        }
+      }
+      ]
     });
+    await alert.present();
   }
 
   async save() {
     const appCanvas = this.el.querySelector('app-canvas');
 
-    ga('send', 'event', ['Button'], ['Save'], ['Saving Canvas']);
 
-    if ("chooseFileSystemEntries" in window) {
-      appCanvas.saveCanvas('');
-    }
-    else if (!this.currentFileName && alertCtrl) {
-      const alert = await alertCtrl.create({
-        header: 'File Name',
-        subHeader: 'Enter a name for the file',
-        inputs: [
-          {
-            name: 'fileName',
-            placeholder: 'newFile'
-          }
-        ],
-        buttons: [
-          {
-            text: 'Cancel',
-            role: 'cancel',
-            cssClass: 'secondary',
-            handler: () => {
-              console.log('Confirm Cancel');
-            }
-          }, {
-            text: 'Ok',
-            handler: async (data) => {
-              console.log('Confirm Ok', data);
-              console.log(appCanvas);
-              await appCanvas.saveCanvas(data.fileName);
-
-              console.log(data);
-
-              this.currentFileName = data.fileName;
-            }
-          }
-        ]
-      });
-      await alert.present();
-    }
-    else if (this.currentFileName) {
+    if (this.currentFileHandle) {
       const firstToast = await toastController.create({
         message: "saving...",
       });
       await firstToast.present();
 
-      await appCanvas.saveCanvas(this.currentFileName);
+      console.log("this.currentFileHandle", this.currentFileHandle);
+      await appCanvas.saveCanvas(this.currentFileName, this.currentFileHandle);
+
+      await firstToast.dismiss();
+
+      const toast = await toastController.create({
+        message: `${this.currentFileName} saved`,
+        duration: 1800
+      });
+      await toast.present();
+    }
+    else {
+      const firstToast = await toastController.create({
+        message: "saving...",
+      });
+      await firstToast.present();
+
+      this.currentFileHandle = await appCanvas.saveCanvas("", this.currentFileHandle);
+      console.log(this.currentFileHandle);
+
+      if (this.currentFileHandle && this.currentFileHandle.name) {
+        this.currentFileName = this.currentFileHandle.name;
+      }
 
       await firstToast.dismiss();
 
@@ -224,7 +206,7 @@ export class AppHome {
   async allImages() {
     this.savedImage = null;
 
-    const modal = await modalCtrl.create({
+    /*const modal = await modalCtrl.create({
       component: 'app-images',
       cssClass: 'imagesModal',
       showBackdrop: navigator.userAgent.includes('iPad') === false && window.matchMedia("(min-width: 1450px)").matches ? false : true
@@ -234,14 +216,38 @@ export class AppHome {
     const { data } = await modal.onDidDismiss();
     console.log(data);
 
-    if (data && data.url) {
+    if (data && data.url && data.handle) {
       console.log(data);
       if (data.name) {
         this.currentFileName = data.name;
+        this.currentFileHandle = data.handle;
       }
 
-      this.savedImage = data.url;
-    }
+      const fileObject = await data.handle.getFile();
+      const fileBlob = await fileObject.blob();
+
+      this.savedImage = fileBlob;
+    }*/
+
+    const options = {
+      // List of allowed MIME types, defaults to `*/*`.
+      mimeTypes: ['image/*'],
+      // List of allowed file extensions, defaults to `''`.
+      extensions: ['png', 'jpg', 'jpeg', 'webp'],
+      // Textual description for file dialog , defaults to `''`.
+      description: 'Image files',
+    };
+
+    const openedFile: any = await fileOpen(options);
+    console.log('openedFile', openedFile);
+
+    this.currentFileHandle = openedFile.handle;
+    this.currentFileName = openedFile.name;
+
+    const fileObject = await openedFile.handle.getFile();
+    console.log(fileObject);
+
+    this.savedImage = URL.createObjectURL(fileObject);
   }
 
   async doGrid() {
@@ -296,11 +302,6 @@ export class AppHome {
     }
   }
 
-  async exportToNote() {
-    const appCanvas = this.el.querySelector('app-canvas');
-    await appCanvas.exportToOneNote();
-  }
-
   openInstall() {
     const pwaInstall = (this.el.querySelector('pwa-install') as HTMLElement);
 
@@ -330,11 +331,12 @@ export class AppHome {
       this.spanned = true;
     }
   }
-  
+
   async handleInkToShape(ev) {
     console.log('home inkshape', ev.detail);
-    await this.el.querySelector('app-canvas').inkToShape(); 
+    await this.el.querySelector('app-canvas').inkToShape();
   }
+
 
   componentDidUnload() {
     if (this.wakeLockController) {
@@ -366,7 +368,7 @@ export class AppHome {
 
         <app-canvas savedDrawing={this.savedImage} mode={this.drawingMode} color={this.color}></app-canvas>
 
-        <app-controls onDoInkToShape={(ev) => this.handleInkToShape(ev)} onLive={() => this.handleLive()} onDoShare={() => this.doShare()} onExport={() => this.exportToNote()} onDragMode={() => this.doDrag()} onDoGrid={() => this.doGrid()} onAllImages={() => this.allImages()} onSaveCanvas={() => this.save()} onPenMode={() => this.pen()} onEraserMode={() => this.erase()} onClearCanvas={() => this.clear()} onColorSelected={ev => this.changeColor(ev)}></app-controls>
+        <app-controls onDoInkToShape={(ev) => this.handleInkToShape(ev)} onLive={() => this.handleLive()} onDoShare={() => this.doShare()} onDragMode={() => this.doDrag()} onDoGrid={() => this.doGrid()} onAllImages={() => this.allImages()} onSaveCanvas={() => this.save()} onPenMode={() => this.pen()} onEraserMode={() => this.erase()} onClearCanvas={() => this.clear()} onColorSelected={ev => this.changeColor(ev)}></app-controls>
 
         <div id="settingsBlock">
           <ion-button shape="round" size="small" id="settingsButton" color="primary" onClick={(event) => this.openSettings(event)} fill="clear">
@@ -375,22 +377,14 @@ export class AppHome {
 
           <div>
 
-            {this.mgtLoaded ? <div>
-              <mgt-msal-provider scopes="Notes.Create UserActivity.ReadWrite.CreatedByApp Device.Read Device.Command" client-id="ea8ee476-a5c2-4617-b376-a3fb40e46864"></mgt-msal-provider>
-              <mgt-login></mgt-login>
-            </div> : <div onClick={() => this.checkMGT()}><p id="signInText">Sign In</p></div>}
+            {(window.matchMedia("(min-width: 800px)").matches) ? <div>
+              <app-login></app-login>
+            </div> : null}
           </div>
 
           {/*<mgt-tasks data-source="todo"></mgt-tasks>*/}
         </div>
 
-        {/*<ion-button onClick={() => this.openSettings()} id="settingsButton" fill="clear">
-          <ion-icon name="settings"></ion-icon>
-    </ion-button>*/}
-
-        <ion-fab id="spanFab" horizontal="start" vertical="bottom"><ion-fab-button onClick={() => this.spanCanvas()} size="small"><ion-icon name="code" size="small"></ion-icon></ion-fab-button></ion-fab>
-
-        {this.spanned ? <div id="spannedImages"><foldable-images></foldable-images></div> : null}
       </div>
     ];
   }
